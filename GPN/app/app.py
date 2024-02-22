@@ -1,106 +1,39 @@
 from typing import Optional
 from fastapi import FastAPI, Depends
-from pydantic import BaseModel
-from pydantic import Field
-from pydantic_settings import BaseSettings
-from sqlalchemy import create_engine, Column, Float, Integer, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import func
-from sqlalchemy import DateTime
-import datetime
 from statistics import median
+from .schemes import DeviceStat, Statistic, User
+from .database import get_db, SessionLocal, Base, engine
 
 app = FastAPI()
 
-
-class Config(BaseSettings):
-    mysql_user: str = Field(
-        default='gpn',
-        env='MYSQL_USER',
-        alias='MYSQL_USER'
-    )
-
-    mysql_host: str = Field(
-        default='localhost',
-        env='MYSQL_HOST',
-        alias='MYSQL_HOST'
-    )
-
-    mysql_password: str = Field(
-        default='gpnpa$$Word',
-        env='MYSQL_PASSWORD',
-        alias='MYSQL_PASSWORD'
-    )
-
-    mysql_database: str = Field(
-        default='gpn',
-        env='MYSQL_DATABASE',
-        alias='MYSQL_DATABASE'
-    )
-
-    class Config:
-        env_file = ".env"
-
-
-def load_config():
-    return Config()
-
-
-cfg: Config = load_config()
-
-
-# Инициализация базы данных
-SQLALCHEMY_DATABASE_URL = f"mysql+mysqldb://{cfg.mysql_user}:{cfg.mysql_password}@{cfg.mysql_host}/{cfg.mysql_database}"
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-
-# Определение модели данных для статистики устройства
-class DeviceStat(Base):
-    __tablename__ = "device_stats"
-    id = Column(Integer, primary_key=True, index=True)
-    device_id = Column(String(50), index=True)
-    x = Column(Float)
-    y = Column(Float)
-    z = Column(Float)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-
-# Создание таблицы в базе данных
 Base.metadata.create_all(bind=engine)
-
-
-class Statistic(BaseModel):
-    x: float
-    y: float
-    z: float
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 # сбор статистики с устройства
 @app.post("/stats/{device_id}")
-def create_stat(device_id: str, stat: Statistic, db: SessionLocal = Depends(get_db)):
-    db_stat = DeviceStat(device_id=device_id, **stat.dict())
+def create_stat(device_id: str, user_id: int, stat: Statistic, db: SessionLocal = Depends(get_db)):
+    db_stat = DeviceStat(device_id=device_id, user_id=user_id, **stat.dict())
     db.add(db_stat)
     db.commit()
     return {"message": "Stat created successfully"}
 
 
-# анализ собранной статистики за определенный период
-@app.get("/stats/{device_id}/summary")
-def get_stat_summary(device_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None,
-                     db: SessionLocal = Depends(get_db)):
-    query = (
-        db.query(
+# создание нового пользователя
+@app.post("/users/")
+def create_user(username: str, email: str, password: str, db: SessionLocal = Depends(get_db)):
+    db_user = User(username=username, email=email)
+    db_user.create_password_hash(password)
+    db.add(db_user)
+    db.commit()
+    return {"message": "User created successfully"}
+
+
+def get_queries(db):
+    query1 = (db.query(DeviceStat.x))
+    query2 = (db.query(DeviceStat.y))
+    query3 = (db.query(DeviceStat.z))
+    query = db.query(
             func.min(DeviceStat.x).label("min_x"),
             func.max(DeviceStat.x).label("max_x"),
             func.count(DeviceStat.x).label("count_x"),
@@ -114,25 +47,13 @@ def get_stat_summary(device_id: str, start_date: Optional[str] = None, end_date:
             func.count(DeviceStat.z).label("count_z"),
             func.sum(DeviceStat.z).label("sum_z"),
         )
-        .filter(DeviceStat.device_id == device_id)
-    )
-    query1 = (db.query(DeviceStat.x)).filter(DeviceStat.device_id == device_id)
-    query2 = (db.query(DeviceStat.y)).filter(DeviceStat.device_id == device_id)
-    query3 = (db.query(DeviceStat.z)).filter(DeviceStat.device_id == device_id)
-    if start_date:
-        query = query.filter(DeviceStat.created_at >= start_date)
-        query1 = query1.filter(DeviceStat.created_at >= start_date)
-        query2 = query2.filter(DeviceStat.created_at >= start_date)
-        query3 = query3.filter(DeviceStat.created_at >= start_date)
-    if end_date:
-        query = query.filter(DeviceStat.created_at <= end_date)
-        query1 = query1.filter(DeviceStat.created_at <= end_date)
-        query2 = query2.filter(DeviceStat.created_at <= end_date)
-        query3 = query3.filter(DeviceStat.created_at <= end_date)
+    return [query, query1, query2, query3]
 
+
+def analysis(query, query1, query2, query3):
     result = query.first()
 
-    if result.count_x != 0 or result.count_y != 0 or result.count_z != 0:
+    if result.count_x != 0:
         if result.count_x != 0:
             median_x = median([x[0] for x in query1.all()])
         else:
@@ -169,4 +90,53 @@ def get_stat_summary(device_id: str, start_date: Optional[str] = None, end_date:
             }
         }
     else:
-        return {"message": "No stats found for the specified device or period"}
+        return {"message": "No stats found"}
+
+
+# анализ собранной статистики за определенный период
+@app.get("/stats/{device_id}/summary")
+def get_stat_summary(device_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                     db: SessionLocal = Depends(get_db)):
+
+    q = get_queries(db)
+    query = q[0].filter(DeviceStat.device_id == device_id)
+    query1 = q[1].filter(DeviceStat.device_id == device_id)
+    query2 = q[2].filter(DeviceStat.device_id == device_id)
+    query3 = q[3].filter(DeviceStat.device_id == device_id)
+
+    if start_date:
+        query = query.filter(DeviceStat.created_at >= start_date)
+        query1 = query1.filter(DeviceStat.created_at >= start_date)
+        query2 = query2.filter(DeviceStat.created_at >= start_date)
+        query3 = query3.filter(DeviceStat.created_at >= start_date)
+    if end_date:
+        query = query.filter(DeviceStat.created_at <= end_date)
+        query1 = query1.filter(DeviceStat.created_at <= end_date)
+        query2 = query2.filter(DeviceStat.created_at <= end_date)
+        query3 = query3.filter(DeviceStat.created_at <= end_date)
+
+    return analysis(query, query1, query2, query3)
+
+
+# Метод для получения агрегированных результатов для всех устройств пользователя
+@app.get("/users/{user_id}/stats/summary")
+def get_user_stats_summary(user_id: int, db: SessionLocal = Depends(get_db)):
+    q = get_queries(db)
+    query = q[0].filter(DeviceStat.user_id == user_id)
+    query1 = q[1].filter(DeviceStat.user_id == user_id)
+    query2 = q[2].filter(DeviceStat.user_id == user_id)
+    query3 = q[3].filter(DeviceStat.user_id == user_id)
+
+    return analysis(query, query1, query2, query3)
+
+
+# Метод для получения агрегированных результатов для каждого устройства пользователя отдельно
+@app.get("/users/{user_id}/devices/{device_id}/stats/summary")
+def get_user_device_stats_summary(user_id: int, device_id: str, db: SessionLocal = Depends(get_db)):
+    q = get_queries(db)
+    query = q[0].filter(DeviceStat.user_id == user_id).filter(DeviceStat.device_id == device_id)
+    query1 = q[1].filter(DeviceStat.user_id == user_id).filter(DeviceStat.device_id == device_id)
+    query2 = q[2].filter(DeviceStat.user_id == user_id).filter(DeviceStat.device_id == device_id)
+    query3 = q[3].filter(DeviceStat.user_id == user_id).filter(DeviceStat.device_id == device_id)
+
+    return analysis(query, query1, query2, query3)

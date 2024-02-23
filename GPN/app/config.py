@@ -27,6 +27,12 @@ class Config(BaseSettings):
         alias='MYSQL_DATABASE'
     )
 
+    redis_url: str = Field(
+        default='redis://localhost:6379/0',
+        env='REDIS_URL',
+        alias='REDIS_URL'
+    )
+
     class Config:
         env_file = ".env"
 

@@ -1,4 +1,4 @@
-version: "1.0"
+version: "3.0"
 
 volumes:
 
@@ -17,26 +17,55 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
     ports:
-      - "3307:3307"
+      - "3306:3306"
     environment:
       MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
       MYSQL_USER: gpn
       MYSQL_PASSWORD: gpnpa$$Word
       MYSQL_DATABASE: gpn
+    restart: unless-stopped
 
-  gpn:
-    build:
-      context: ../GPN
-      dockerfile: ./Dockerfile
-    image: gpn/gpn:0.1
+  app:
+    build: ../GPN
+    ports:
+      - 5000:5000
+    command: uvicorn app:app --host 0.0.0.0 --port 5000 --reload
+    volumes:
+      - ../GPN:/usr/src/app
+      - /etc/localtime:/etc/localtime
     links:
       - mysql:mysql
-    ports:
-      - "5000:5000"
+      - redis:redis
+    environment:
+      - MYSQL_USER=gpn
+      - MYSQL_HOST=172.17.0.1
+      - MYSQL_PASSWORD=gpnpa$$Word
+      - MYSQL_DATABASE=gpn
+      - REDIS_URL=redis://redis:6379/0
+    restart: always
+    depends_on:
+      - mysql
+      - redis
+
+  celery_app:
+    build: ../GPN
+    command: celery -A app.celery_app worker --loglevel=info --pool=solo
+    volumes:
+      - ../GPN:/usr/src/app
+    links:
+      - mysql:mysql
+      - redis:redis
     environment:
       - MYSQL_USER=gpn
       - MYSQL_HOST=mysql
       - MYSQL_PASSWORD=gpnpa$$Word
       - MYSQL_DATABASE=gpn
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
     depends_on:
-      - mysql
+      - app
+      - redis
+
+  redis:
+    image: redis:7
+    restart: unless-stopped

@@ -1,9 +1,9 @@
+import datetime
 from pydantic import BaseModel
-from sqlalchemy import Column, Integer, String, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, ForeignKey, Float, DateTime
 from sqlalchemy.orm import relationship
 from .database import Base
 from passlib.context import CryptContext
-
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -24,20 +24,18 @@ class User(Base):
     def verify_password(self, password: str):
         return pwd_context.verify(password, self.hashed_password)
 
-    devices = relationship("DeviceStat", back_populates="owner")
-
 
 class DeviceStat(Base):
     __tablename__ = "device_stats"
 
     id = Column(Integer, primary_key=True, index=True)
     device_id = Column(String(100), index=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
     x = Column(Float)
     y = Column(Float)
     z = Column(Float)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    owner = relationship("User", back_populates="devices")
 
 
 class Statistic(BaseModel):
